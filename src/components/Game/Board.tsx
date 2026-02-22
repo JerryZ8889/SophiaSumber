@@ -7,95 +7,98 @@ interface BoardProps {
   onToggle: (id: string) => void;
   cols: number;
   maxRows: number;
+  overshoot?: boolean;
 }
 
-export function Board({ blocks, selectedIds, onToggle, cols, maxRows }: BoardProps) {
-  // Calculate cell size based on viewport? 
-  // For simplicity, we'll use a grid layout with fixed aspect ratio or responsive sizing.
-  
+export function Board({ blocks, selectedIds, onToggle, cols, maxRows, overshoot }: BoardProps) {
   return (
-    <div 
-      className="relative bg-zinc-900 rounded-lg overflow-hidden border-2 border-zinc-700 shadow-inner"
+    <motion.div
+      className="relative rounded-2xl overflow-hidden border border-zinc-800 shadow-2xl"
+      animate={overshoot ? { x: [-4, 4, -4, 4, 0] } : { x: 0 }}
+      transition={{ duration: 0.3 }}
       style={{
         width: '100%',
         maxWidth: '400px',
-        aspectRatio: `${cols} / ${maxRows}`, // Keep aspect ratio consistent
+        aspectRatio: `${cols} / ${maxRows}`,
+        background: 'linear-gradient(180deg, #0f0f14 0%, #111118 100%)',
       }}
     >
-      {/* Grid Background (Optional) */}
-      <div 
-        className="absolute inset-0 grid"
+      {/* Grid lines */}
+      <div
+        className="absolute inset-0 grid pointer-events-none"
         style={{
           gridTemplateColumns: `repeat(${cols}, 1fr)`,
           gridTemplateRows: `repeat(${maxRows}, 1fr)`,
         }}
       >
         {Array.from({ length: cols * maxRows }).map((_, i) => (
-          <div key={i} className="border-[0.5px] border-zinc-800/50" />
+          <div key={i} className="border-[0.5px] border-white/[0.03]" />
         ))}
+      </div>
+
+      {/* Danger zone */}
+      <div className="absolute top-0 left-0 right-0 pointer-events-none" style={{ height: `${(1 / maxRows) * 100}%` }}>
+        <div className="absolute inset-0 bg-red-500/5 border-b border-red-500/20" />
+        <div className="absolute inset-0 flex items-center justify-center">
+          <span className="text-red-500/30 text-[9px] font-mono uppercase tracking-[0.3em]">DANGER</span>
+        </div>
       </div>
 
       {/* Blocks */}
       <AnimatePresence>
         {blocks.map((block) => {
           const isSelected = selectedIds.includes(block.id);
-          
-          // Calculate position
-          // row 0 is bottom. In CSS grid, row 1 is top.
-          // So CSS row = (maxRows - 1 - block.row) + 1? 
-          // Actually, let's use absolute positioning for smooth animation.
-          // percentage based on grid size.
-          
-          const bottom = (block.row / maxRows) * 100;
-          const left = (block.col / cols) * 100;
-          const width = 100 / cols;
-          const height = 100 / maxRows;
+          const isDanger = block.row >= maxRows - 2;
+
+          const bottomPct = (block.row / maxRows) * 100;
+          const leftPct = (block.col / cols) * 100;
+          const widthPct = 100 / cols;
+          const heightPct = 100 / maxRows;
 
           return (
             <motion.button
               key={block.id}
-              layout
-              initial={{ opacity: 0, scale: 0, y: -50 }}
-              animate={{ 
-                opacity: 1, 
-                scale: isSelected ? 0.9 : 1,
-                x: `${block.col * 100}%`, // We use x/y transform relative to container? No, absolute is easier.
-                bottom: `${bottom}%`,
-                left: `${left}%`,
-                width: `${width}%`,
-                height: `${height}%`
+              initial={{ opacity: 0, scale: 0.3 }}
+              animate={{
+                opacity: 1,
+                scale: isSelected ? 0.82 : 1,
+                bottom: `${bottomPct}%`,
+                left: `${leftPct}%`,
+                width: `${widthPct}%`,
+                height: `${heightPct}%`,
               }}
-              exit={{ opacity: 0, scale: 0 }}
-              transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-              className={`absolute p-1 focus:outline-none touch-manipulation`}
-              style={{
-                // Override animate for left/bottom to avoid conflict if needed, 
-                // but motion handles it well if we use standard props.
-                // Actually, let's use style for positioning to be safe with motion.
-                // Wait, motion animate prop is better for transitions.
+              exit={{ opacity: 0, scale: 0.2, transition: { duration: 0.12 } }}
+              transition={{
+                // position (falling) uses a softer spring so the drop feels weighted
+                bottom: { type: 'spring', stiffness: 280, damping: 22 },
+                left:   { type: 'spring', stiffness: 280, damping: 22 },
+                // scale & opacity snap fast
+                scale:   { type: 'spring', stiffness: 500, damping: 35 },
+                opacity: { duration: 0.15 },
               }}
+              className="absolute p-[3px] focus:outline-none touch-manipulation"
+              style={{ zIndex: isSelected ? 10 : 1 }}
               onClick={() => onToggle(block.id)}
             >
-              <div 
-                className={`w-full h-full rounded-md flex items-center justify-center text-xl font-bold font-mono shadow-sm transition-colors duration-200
-                  ${block.color} 
-                  ${isSelected ? 'brightness-125 ring-4 ring-white z-10' : 'text-white'}
-                  ${block.row >= maxRows - 2 ? 'animate-pulse' : ''} 
+              <div
+                className={`
+                  w-full h-full rounded-xl flex items-center justify-center font-black font-mono
+                  shadow-lg transition-all duration-100 select-none
+                  ${block.color}
+                  ${isSelected
+                    ? 'ring-2 ring-white/90 ring-offset-1 ring-offset-transparent shadow-[0_0_12px_rgba(255,255,255,0.3)]'
+                    : 'opacity-90 hover:opacity-100'
+                  }
+                  ${isDanger ? 'animate-pulse' : ''}
                 `}
+                style={{ fontSize: 'clamp(9px, 2.8vw, 17px)' }}
               >
-                {block.value}
+                <span className="text-white drop-shadow">{block.value}</span>
               </div>
             </motion.button>
           );
         })}
       </AnimatePresence>
-      
-      {/* Danger Zone Indicator */}
-      <div 
-        className="absolute top-0 left-0 right-0 h-[11%] bg-red-500/10 border-b border-red-500/30 pointer-events-none flex items-center justify-center"
-      >
-        <span className="text-red-500/50 text-xs font-mono uppercase tracking-widest">Danger Zone</span>
-      </div>
-    </div>
+    </motion.div>
   );
 }

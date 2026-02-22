@@ -1,30 +1,32 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 export type GameMode = 'classic' | 'time';
-export type GameState = 'menu' | 'playing' | 'gameover';
+export type GameState = 'menu' | 'playing' | 'gameover' | 'win';
 
 export interface Block {
   id: string;
   value: number;
   col: number;
-  row: number; // 0 is bottom, increases upwards
+  row: number;
   color: string;
 }
 
 const COLS = 6;
-const MAX_ROWS = 9; // Game over if a block reaches this row index (0-8 is safe, 9 is death)
+const MAX_ROWS = 9;
 const INITIAL_ROWS = 4;
-const TIME_LIMIT = 10; // Seconds for time mode
+const TIME_LIMIT = 10;
 
-// Colors for blocks based on value ranges or just random variety
 const BLOCK_COLORS = [
-  'bg-cyan-500',
+  'bg-cyan-400',
   'bg-pink-500',
-  'bg-yellow-500',
-  'bg-emerald-500',
+  'bg-amber-400',
+  'bg-emerald-400',
   'bg-violet-500',
-  'bg-orange-500',
+  'bg-orange-400',
 ];
+
+function getRandomValue() { return Math.floor(Math.random() * 9) + 1; }
+function getRandomColor() { return BLOCK_COLORS[Math.floor(Math.random() * BLOCK_COLORS.length)]; }
 
 export function useGameLogic() {
   const [mode, setMode] = useState<GameMode>('classic');
@@ -33,24 +35,92 @@ export function useGameLogic() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [target, setTarget] = useState<number>(0);
   const [score, setScore] = useState<number>(0);
-  const [highScore, setHighScore] = useState<number>(0);
   const [timeLeft, setTimeLeft] = useState<number>(TIME_LIMIT);
   const [level, setLevel] = useState<number>(1);
+  const [successCount, setSuccessCount] = useState(0);
+  const [overshoot, setOvershoot] = useState(false);
 
-  // Generate a random block value
-  const getRandomValue = () => Math.floor(Math.random() * 9) + 1;
-  const getRandomColor = () => BLOCK_COLORS[Math.floor(Math.random() * BLOCK_COLORS.length)];
+  // Use refs to avoid stale closures in callbacks
+  const levelRef = useRef(level);
+  const blocksRef = useRef(blocks);
+  const targetRef = useRef(target);
+  const modeRef = useRef(mode);
+  // Holds the addRow timer so React's effect cleanup can't cancel it prematurely
+  const addRowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Initialize game
-  const startGame = (selectedMode: GameMode) => {
+  useEffect(() => { levelRef.current = level; }, [level]);
+  useEffect(() => { blocksRef.current = blocks; }, [blocks]);
+  useEffect(() => { targetRef.current = target; }, [target]);
+  useEffect(() => { modeRef.current = mode; }, [mode]);
+
+  // When leaving 'playing' (menu, gameover, win), cancel any pending addRow timer
+  useEffect(() => {
+    if (gameState !== 'playing' && addRowTimerRef.current) {
+      clearTimeout(addRowTimerRef.current);
+      addRowTimerRef.current = null;
+    }
+  }, [gameState]);
+
+  const generateTarget = useCallback((currentBlocks: Block[]) => {
+    if (currentBlocks.length === 0) return;
+    const count = Math.floor(Math.random() * 3) + 2;
+    const shuffled = [...currentBlocks].sort(() => 0.5 - Math.random());
+    const selected = shuffled.slice(0, Math.min(count, shuffled.length));
+    const sum = selected.reduce((acc, b) => acc + b.value, 0);
+    setTarget(sum);
+  }, []);
+
+  const addRow = useCallback(() => {
+    const currentLevel = levelRef.current;
+    setBlocks(prev => {
+      const density = Math.min(0.45 + currentLevel * 0.05, 0.85);
+
+      // Decide which columns receive a new block this round
+      const newRowBlocks: Block[] = [];
+      const colsReceiving = new Set<number>();
+      for (let c = 0; c < COLS; c++) {
+        if (Math.random() < density) {
+          colsReceiving.add(c);
+          newRowBlocks.push({
+            id: Math.random().toString(36).substr(2, 9),
+            value: getRandomValue(),
+            col: c,
+            row: 0,
+            color: getRandomColor(),
+          });
+        }
+      }
+
+      // Only shift blocks in columns that are receiving a new block.
+      // Columns without a new block stay put, so there are never floating gaps.
+      const shifted = prev.map(b => ({
+        ...b,
+        row: colsReceiving.has(b.col) ? b.row + 1 : b.row,
+      }));
+
+      if (shifted.some(b => b.row >= MAX_ROWS)) {
+        setGameState('gameover');
+        return prev;
+      }
+
+      return [...shifted, ...newRowBlocks];
+    });
+  }, []);
+
+  const startGame = useCallback((selectedMode: GameMode) => {
+    if (addRowTimerRef.current) {
+      clearTimeout(addRowTimerRef.current);
+      addRowTimerRef.current = null;
+    }
     setMode(selectedMode);
     setGameState('playing');
     setScore(0);
     setLevel(1);
+    setSuccessCount(0);
     setTimeLeft(TIME_LIMIT);
     setSelectedIds([]);
-    
-    // Create initial blocks
+    setOvershoot(false);
+
     const newBlocks: Block[] = [];
     for (let r = 0; r < INITIAL_ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
@@ -65,181 +135,128 @@ export function useGameLogic() {
     }
     setBlocks(newBlocks);
     generateTarget(newBlocks);
-  };
+  }, [generateTarget]);
 
-  // Generate a valid target based on current blocks
-  const generateTarget = useCallback((currentBlocks: Block[]) => {
-    if (currentBlocks.length === 0) return;
-    
-    // Find a random combination of 2-4 blocks to ensure solvability
-    // This is a simple heuristic; strictly ensuring solvability is harder but this works 99% of time
-    const count = Math.floor(Math.random() * 3) + 2; // 2 to 4 blocks
-    const shuffled = [...currentBlocks].sort(() => 0.5 - Math.random());
-    const selected = shuffled.slice(0, Math.min(count, shuffled.length));
-    const sum = selected.reduce((acc, b) => acc + b.value, 0);
-    setTarget(sum);
-  }, []);
-
-  // Add a new row at the bottom
-  const addRow = useCallback(() => {
-    setBlocks(prev => {
-      // Shift everything up
-      const shifted = prev.map(b => ({ ...b, row: b.row + 1 }));
-      
-      // Check for game over
-      if (shifted.some(b => b.row >= MAX_ROWS)) {
-        setGameState('gameover');
-        return prev; // Return prev to show the state that caused death
-      }
-
-      // Add new row at row 0
-      const newRow: Block[] = [];
-      // Difficulty: Increase density with level. 
-      // Level 1: ~3-4 blocks. Level 10: ~5-6 blocks.
-      const density = Math.min(0.5 + (level * 0.05), 0.9); 
-      
-      for (let c = 0; c < COLS; c++) {
-        if (Math.random() < density) {
-          newRow.push({
-            id: Math.random().toString(36).substr(2, 9),
-            value: getRandomValue(),
-            col: c,
-            row: 0,
-            color: getRandomColor(),
-          });
-        }
-      }
-      return [...shifted, ...newRow];
-    });
-  }, [level]); // Add level dependency
-
-  // Handle block selection
-  const toggleBlock = (id: string) => {
+  const toggleBlock = useCallback((id: string) => {
     if (gameState !== 'playing') return;
-    
-    setSelectedIds(prev => {
-      if (prev.includes(id)) {
-        return prev.filter(i => i !== id);
-      } else {
-        const newSelection = [...prev, id];
-        checkSelection(newSelection);
-        return newSelection;
+    setSelectedIds(prev =>
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  }, [gameState]);
+
+  // React to selection changes
+  useEffect(() => {
+    if (gameState !== 'playing' || targetRef.current === 0 || selectedIds.length === 0) return;
+
+    const currentBlocks = blocksRef.current;
+    const currentTarget = targetRef.current;
+    const currentLevel = levelRef.current;
+
+    const sum = currentBlocks
+      .filter(b => selectedIds.includes(b.id))
+      .reduce((acc, b) => acc + b.value, 0);
+
+    if (sum === currentTarget) {
+      // Match! Apply success
+      const matchedIds = [...selectedIds];
+      const remainingBlocks = currentBlocks.filter(b => !matchedIds.includes(b.id));
+
+      // Apply gravity per column — produce new objects so Framer Motion
+      // detects the row change and animates the fall.
+      const rowMap = new Map<string, number>();
+      for (let c = 0; c < COLS; c++) {
+        const colBlocks = remainingBlocks
+          .filter(b => b.col === c)
+          .sort((a, b) => a.row - b.row);
+        colBlocks.forEach((b, index) => rowMap.set(b.id, index));
       }
-    });
-  };
+      const newBlocks = remainingBlocks.map(b => ({
+        ...b,
+        row: rowMap.get(b.id) ?? b.row,
+      }));
 
-  // Check if selection matches target
-  const checkSelection = (currentSelection: string[]) => {
-    const selectedBlocks = blocks.filter(b => currentSelection.includes(b.id));
-    const sum = selectedBlocks.reduce((acc, b) => acc + b.value, 0);
+      setBlocks(newBlocks);
+      setSelectedIds([]);
+      setOvershoot(false);
+      setScore(s => s + matchedIds.length * 10 * currentLevel);
 
-    if (sum === target) {
-      // Success!
-      handleSuccess(currentSelection);
-    } else if (sum > target) {
-      // Overshot - maybe visual feedback? For now just keep selected
-    }
-  };
-
-  const handleSuccess = (matchedIds: string[]) => {
-    // 1. Remove blocks
-    const remainingBlocks = blocks.filter(b => !matchedIds.includes(b.id));
-    
-    // 2. Apply Gravity
-    // For each column, sort blocks by row, then re-assign row indices starting from 0?
-    // Wait, if we add rows from bottom, gravity should pull blocks DOWN to fill gaps?
-    // Yes, standard puzzle logic: blocks fall into empty spaces.
-    // But "Add Row" pushes UP.
-    // So:
-    // - Remove matched blocks.
-    // - For each column, blocks above the removed ones fall down.
-    
-    const newBlocks = [...remainingBlocks];
-    
-    // Apply gravity per column
-    for (let c = 0; c < COLS; c++) {
-      const colBlocks = newBlocks.filter(b => b.col === c).sort((a, b) => a.row - b.row);
-      // Re-index rows to be contiguous starting from where?
-      // Actually, if row 0 is bottom, and we remove a block at row 0, row 1 falls to row 0.
-      // So we just re-assign rows 0..N-1 for the N blocks in this column.
-      colBlocks.forEach((b, index) => {
-        b.row = index;
+      // Level up every 3 successes
+      setSuccessCount(prev => {
+        const next = prev + 1;
+        if (next % 3 === 0) setLevel(l => l + 1);
+        return next;
       });
-    }
 
-    setBlocks(newBlocks);
-    setSelectedIds([]);
-    setScore(s => s + matchedIds.length * 10 * level);
-    
-    // 3. Mode specific logic
-    if (mode === 'classic') {
-      // Classic: Add row on success
-      setTimeout(() => {
-        addRow();
-        // If board was empty, we need to generate target AFTER addRow
-        // We can't easily do it here because addRow is state update.
-        // We'll rely on a useEffect to ensure target exists if blocks exist.
-      }, 300);
+      if (newBlocks.length > 0) {
+        generateTarget(newBlocks);
+        if (modeRef.current === 'classic') {
+          // Use a ref-managed timer so React's effect cleanup doesn't cancel it
+          if (addRowTimerRef.current) clearTimeout(addRowTimerRef.current);
+          addRowTimerRef.current = setTimeout(() => {
+            addRowTimerRef.current = null;
+            addRow();
+          }, 300);
+        } else {
+          setTimeLeft(TIME_LIMIT);
+        }
+      } else {
+        // Board fully cleared — YOU WIN
+        setTarget(0);
+        setGameState('win');
+      }
+    } else if (sum > currentTarget) {
+      // Overshoot — flash and auto-clear
+      setOvershoot(true);
+      const t = setTimeout(() => {
+        setSelectedIds([]);
+        setOvershoot(false);
+      }, 500);
+      return () => clearTimeout(t);
     } else {
-      // Time mode: Reset timer
-      setTimeLeft(TIME_LIMIT);
+      // Sum back under target (e.g. user deselected during overshoot) — clear styling
+      setOvershoot(false);
     }
+  // Only run when selectedIds changes; other deps accessed via refs
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIds]);
 
-    // 4. New Target
-    // If we have remaining blocks, generate immediately.
-    // If not (cleared board), we wait for addRow (handled by useEffect).
-    if (newBlocks.length > 0) {
-      generateTarget(newBlocks);
-    } else {
-      setTarget(0); // Signal that we need a target
-    }
-  };
-
-  // Ensure target exists if blocks exist and target is 0 (e.g. after board clear)
+  // Ensure a target always exists when there are blocks
   useEffect(() => {
     if (gameState === 'playing' && target === 0 && blocks.length > 0) {
       generateTarget(blocks);
     }
   }, [blocks, target, gameState, generateTarget]);
 
-  // Timer for Time Mode
+  // Countdown timer for time mode (stops automatically when gameState leaves 'playing')
   useEffect(() => {
     if (mode !== 'time' || gameState !== 'playing') return;
 
     const timer = setInterval(() => {
       setTimeLeft(prev => {
         if (prev <= 1) {
-          // Time out!
           addRow();
-          // Generate new target on timeout?
-          // "Time running out forces a new row and no score for that round"
-          // This implies the round (target) is skipped/failed.
-          // We need to generate a new target based on the NEW blocks (which we don't have yet).
-          // We can set target to 0 to trigger the useEffect?
-          // But addRow is async state update.
-          setTarget(0); 
-          return TIME_LIMIT; // Reset timer
+          setTarget(0);
+          return TIME_LIMIT;
         }
-        return prev - 1; // Decrement normally
+        return prev - 1;
       });
     }, 1000);
 
     return () => clearInterval(timer);
   }, [mode, gameState, addRow]);
 
-  // Check Game Over externally if needed, but addRow handles it.
-  
   return {
     gameState,
     score,
-    highScore,
     blocks,
     selectedIds,
     target,
     timeLeft,
     mode,
+    level,
+    overshoot,
     startGame,
     toggleBlock,
-    setGameState
+    setGameState,
   };
 }
